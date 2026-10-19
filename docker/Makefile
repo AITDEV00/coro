@@ -128,7 +128,23 @@ fetch-models: ## Export the pinned speakrs weights from the HF cache into docker
 		 plda_lda.npy plda_tr.npy plda_mu.npy plda_psi.npy plda_mean1.npy plda_mean2.npy; do \
 		cp -L "$$SNAP/$$f" models/speakrs/$$f; \
 	done; \
-	echo "Exported 9 files ($$(du -sh models/speakrs | cut -f1)) — commit NOT required (gitignored)."
+	echo "Exported 9 speakrs files ($$(du -sh models/speakrs | cut -f1)) — commit NOT required (gitignored)."
+
+.PHONY: fetch-canary
+fetch-canary: ## Export the canary ASR snapshot (snapshots/ + refs/) from the HF cache into docker/models/canary/.
+	CANARY_SNAP_DIR=$$HOME/.cache/huggingface/hub/models--collectiveai--canary-1b-v2-onnx-split-int8; \
+	if [ ! -d "$$CANARY_SNAP_DIR/snapshots" ]; then \
+		echo "No canary snapshot in the HF cache; run coro once locally (it downloads ~1.3 GB) or use huggingface-cli."; exit 1; \
+	fi; \
+	rev=$$(cat "$$CANARY_SNAP_DIR/refs/main"); \
+	mkdir -p models/canary/snapshots/$$rev models/canary/refs; \
+	for f in config.json vocab.txt \
+			 encoder-model.static_qdq_v4_pct_excl.onnx encoder-model.static_qdq_v4_pct_excl.onnx.data \
+			 decoder_step.dynamic_v1_quint8.onnx xattn_kv.onnx; do \
+		cp -L "$$CANARY_SNAP_DIR/snapshots/$$rev/$$f" models/canary/snapshots/$$rev/$$f; \
+	done; \
+	cp "$$CANARY_SNAP_DIR/refs/main" models/canary/refs/main; \
+	echo "Exported canary snapshot $$rev ($$(du -sh models/canary | cut -f1)) — commit NOT required (gitignored)."
 
 .PHONY: adeo
 adeo: ## Build the ADEO cluster image (port 8080, UID 10000, baked weights, /health-check).

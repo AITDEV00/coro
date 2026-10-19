@@ -57,6 +57,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/cuda/bin:$PATH \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
+# NOTE on ASR device: the canary INT8 graph (static QDQ encoder + dynamic
+# quint8 decoder) runs FASTER on the CPU EP than on the CUDA EP — quantized
+# ops partition poorly across GPU/CPU with per-op tensor transfers — so the
+# image deliberately does NOT put the venv's cu13 cuBLAS on LD_LIBRARY_PATH.
+# A stress test on the RTX 4090 (8 x 5 concurrent 60s clips) measured:
+#   CPU EP: 17x aggregate RTFx, p50 26.7s, 1007% container CPU
+#   CUDA EP: 12x aggregate RTFx, p50 36.6s
+# CORO_ASR_DEVICE=cpu pins the CPU EP deterministically (without it, 'auto'
+# silently uses CUDA when the libs resolve, which is the slower path here).
+# The GPU stays exclusively for speakrs diarization.
+
 # Python 3.12 (deadsnakes, matching the public image's interpreter), ffmpeg
 # for audio decoding, ca-certificates for the one-time model download below.
 RUN apt-get update \
@@ -162,6 +173,27 @@ COPY --chown=runner:runner ${SPEAKRS_MODEL_DIR}/wespeaker-voxceleb-resnet34.min_
      ${SPEAKRS_MODEL_DIR}/plda_mean2.npy \
      /home/runner/models/speakrs/
 
+# ---------------------------------------------------------------------------
+# Baked canary ASR model (docker/models/canary/, gitignored — populate with
+# `make fetch-models`; the full snapshot layout so the standard HF-hub cache
+# resolution finds it offline). The default ASR slug
+# (onnx-canary-split / collectiveai/canary-1b-v2-onnx-split-int8, ~1.3 GB
+# quantized) — resolved with huggingface_hub.snapshot_download, which under
+# HF_HUB_OFFLINE=1 needs the snapshot dir AND refs/main under HF_HUB_CACHE.
+# The entrypoint seeds the cache from this layer at start.
+#
+# Same layer-order slot as the speakrs weights: above the source COPY (a
+# code edit must not re-copy 1.3 GB), below the deps sync (a model bump must
+# not re-sync the 8 GB venv). Blobs + refs split into two layers so a
+# revision bump never re-copies the other.
+# ---------------------------------------------------------------------------
+ARG CANARY_MODEL_DIR=docker/models/canary
+# Two COPYs (not one with both sources): multiple sources flatten into the
+# dest, which would lose the snapshots/<rev>/ nesting that snapshot_download
+# resolves. Copy the parent dir to preserve the tree.
+COPY --chown=runner:runner ${CANARY_MODEL_DIR}/snapshots /home/runner/models/canary/snapshots
+COPY --chown=runner:runner ${CANARY_MODEL_DIR}/refs /home/runner/models/canary/refs
+
 # Optional speakrs wheel (docker/wheels/, gitignored; maturin build from
 # avencera/speakrs), also above the source COPY: like the weights it is a
 # rare-change binary blob (only a speakrs version bump touches it), so a
@@ -216,6 +248,7 @@ ENV CORO_BACKEND_DIARIZATION=speakrs \
     CORO_DIARIZATION_SPEAKRS_MODE=cuda-fast \
     CORO_DIARIZATION_WORKERS=4 \
     CORO_MODEL_DIARIZATION=pyannote/speaker-diarization-community-1 \
+    CORO_ASR_DEVICE=cpu \
     HF_HUB_OFFLINE=1 \
     SPEAKRS_MODEL_DIR=/home/runner/models/speakrs \
     XDG_CACHE_HOME=/tmp/runner/.cache \

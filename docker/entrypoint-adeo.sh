@@ -48,6 +48,41 @@ else
     echo "[entrypoint] no baked weights at $BAKED; speakrs will resolve them from $HF_HUB_CACHE"
 fi
 
+# ── Seed the baked canary ASR model into the writable HF cache layout ────────
+# The default ASR slug (onnx-canary-split) resolves its repo with
+# huggingface_hub.snapshot_download, which under HF_HUB_OFFLINE=1 needs the
+# snapshot dir AND refs/main present under HF_HUB_CACHE. Same hardlink-or-copy
+# seeding as speakrs; a warm cache mount makes it a no-op.
+CANARY_BAKED="${CANARY_MODEL_DIR:-/home/runner/models/canary}"
+CANARY_REPO_DIR="${HF_HUB_CACHE}/models--collectiveai--canary-1b-v2-onnx-split-int8"
+if [ -d "$CANARY_BAKED/snapshots" ]; then
+    mkdir -p "$CANARY_REPO_DIR/snapshots"
+    canary_copied=0
+    for snap in "$CANARY_BAKED/snapshots"/*/; do
+        rev="$(basename "$snap")"
+        if [ ! -d "$CANARY_REPO_DIR/snapshots/$rev" ]; then
+            mkdir -p "$CANARY_REPO_DIR/snapshots/$rev"
+        fi
+        for f in "$snap"*; do
+            name="$(basename "$f")"
+            if [ ! -e "$CANARY_REPO_DIR/snapshots/$rev/$name" ]; then
+                ln "$f" "$CANARY_REPO_DIR/snapshots/$rev/$name" 2>/dev/null \
+                    || cp "$f" "$CANARY_REPO_DIR/snapshots/$rev/$name"
+                canary_copied=$((canary_copied + 1))
+            fi
+        done
+    done
+    if [ -d "$CANARY_BAKED/refs" ] && [ ! -e "$CANARY_REPO_DIR/refs/main" ]; then
+        mkdir -p "$CANARY_REPO_DIR/refs"
+        ln "$CANARY_BAKED/refs/main" "$CANARY_REPO_DIR/refs/main" 2>/dev/null \
+            || cp "$CANARY_BAKED/refs/main" "$CANARY_REPO_DIR/refs/main"
+        canary_copied=$((canary_copied + 1))
+    fi
+    echo "[entrypoint] canary ASR: seeded $canary_copied file(s) into $CANARY_REPO_DIR"
+else
+    echo "[entrypoint] no baked canary at $CANARY_BAKED; ASR resolves from $HF_HUB_CACHE"
+fi
+
 echo "[entrypoint] coro speakrs backend: mode=${CORO_DIARIZATION_SPEAKRS_MODE:-cuda-fast} workers=${CORO_DIARIZATION_WORKERS:-4}"
 
 # ── Exec the server as PID 1 (single foreground process) ───────────────────
