@@ -54,3 +54,6 @@ __pycache__/
 .venv/
 .mypy_cache/
 .ruff_cache/
+
+# Local speakrs wheels for docker builds (docker/Makefile picks them up)
+docker/wheels/

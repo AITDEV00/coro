@@ -109,6 +109,18 @@ WORKDIR /app
 # behind TRITON_AVAILABLE. coro uses neither. No-op on the CPU image.
 COPY pyproject.toml uv.lock README.md LICENSE ./
 
+# Optional speakrs wheel (see docs/adr/0025-speakrs-diarization-backend.md):
+# pass --build-arg SPEAKRS_WHEEL=docker/wheels/speakrs-*.whl (relative to the
+# build-context root, i.e. the repo) to bake the speakrs diarization backend
+# into the venv. The wheel installs AFTER both uv sync passes because sync is
+# locked and would otherwise prune it. --no-deps because the CUDA libraries
+# it would pull as extras already resolve from the venv: nvidia-cublas-cu12
+# ships in the cuda extra (CTranslate2 links it) and cuDNN 9 comes from
+# torch's cudnn-cu13 wheel via the runtime LD_LIBRARY_PATH — installing the
+# cu12 cuDNN wheel next to it risks the CUDNN sublibrary mismatch called out
+# below. Absent -> plain build; the backend's startup error names the install
+# steps when selected.
+ARG SPEAKRS_WHEEL
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev --no-editable \
         --no-install-package triton --extra ${EXTRA}
@@ -118,6 +130,14 @@ COPY coro ./coro
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable \
         --no-install-package triton --extra ${EXTRA}
+
+# uv-created venvs carry no pip, so install with uv. The README.md fallback
+# keeps a plain `docker build` (no build arg) working unchanged.
+COPY ${SPEAKRS_WHEEL:-README.md} /tmp/speakrs-wheel/
+RUN if ls /tmp/speakrs-wheel/*.whl >/dev/null 2>&1; then \
+        uv pip install --python /app/.venv/bin/python --no-deps \
+            /tmp/speakrs-wheel/*.whl; \
+    fi
 
 # Self-host the Scalar docs bundle inside the installed package, so it travels
 # with the venv into the runtime stage and /docs makes no third-party request at

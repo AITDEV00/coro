@@ -178,7 +178,7 @@ docker run --rm -p 8000:8000 \
 ```
 
 To build the image yourself instead of pulling, pass the matching
-`CORE_IMAGE` / `EXTRA` build args (see the [Dockerfile](Dockerfile)):
+`CORE_IMAGE` / `EXTRA` build args (see the [Dockerfile](docker/Dockerfile)):
 
 ```bash
 # CPU
