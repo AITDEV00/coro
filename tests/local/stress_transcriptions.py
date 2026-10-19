@@ -25,13 +25,14 @@ AUDIO = os.environ.get("CORO_AUDIO", "/tmp/smoke-60s.wav")
 CONCURRENCY = int(os.environ.get("CORO_CONCURRENCY", "8"))
 ROUNDS = int(os.environ.get("CORO_ROUNDS", "5"))
 FMT = os.environ.get("CORO_FORMAT", "diarized_json")
+ROUTE = os.environ.get("CORO_ROUTE", "transcriptions")  # transcriptions | diarization
 
 results = []          # (ok, elapsed, audio_dur, segments)
 results_lock = threading.Lock()
 
 
 def post_audio(path: str, fmt: str = FMT, timeout: float = 600.0) -> dict:
-    """POST one file to /v1/audio/transcriptions, return json + timing."""
+    """POST one file to /v1/audio/{transcriptions|diarization} per CORO_ROUTE."""
     boundary = "----stressBoundary7d9f2a"
     with open(path, "rb") as f:
         payload = f.read()
@@ -39,13 +40,16 @@ def post_audio(path: str, fmt: str = FMT, timeout: float = 600.0) -> dict:
         f"--{boundary}\r\n"
         f"Content-Disposition: form-data; name=\"file\"; filename=\"clip.wav\"\r\n"
         f"Content-Type: audio/wav\r\n\r\n"
-    ).encode() + payload + (
-        f"\r\n--{boundary}\r\n"
-        f"Content-Disposition: form-data; name=\"response_format\"\r\n\r\n{fmt}\r\n"
-        f"--{boundary}--\r\n"
-    ).encode()
+    ).encode() + payload
+    if ROUTE == "transcriptions":
+        body += (
+            f"\r\n--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"response_format\"\r\n\r\n{fmt}\r\n"
+        ).encode()
+    # The CRLF before the closing boundary is part of the delimiter itself.
+    body += f"\r\n--{boundary}--\r\n".encode()
     req = urllib.request.Request(
-        f"{BASE}/v1/audio/transcriptions",
+        f"{BASE}/v1/audio/{ROUTE}",
         data=body,
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
@@ -80,7 +84,7 @@ def pct(sorted_vals, p):
 
 
 def main():
-    print(f"target={BASE} audio={AUDIO} concurrency={CONCURRENCY} rounds={ROUNDS} fmt={FMT}")
+    print(f"target={BASE} route={ROUTE} audio={AUDIO} concurrency={CONCURRENCY} rounds={ROUNDS}")
 
     # Phase 1: health gate
     with urllib.request.urlopen(f"{BASE}/health-check", timeout=10) as r:
