@@ -95,13 +95,61 @@ class DiarizationJob(BaseModel):
     output: DiarizationJobOutput | None = None
 
 
-# MARK: Unsupported-field table (spec-honest 400s)
-def _unsupported(*, field: str, reason: str) -> tuple[dict, str]:
-    error = {"field": field, "message": reason}
-    return error, f"{field} is not supported by this engine."
-
-
+# MARK: Spec-field table ---------------------------------------------------------
+# Driven by the pinned official OpenAPI fixture
+# (tests/api/pyannote/pyannoteai-openapi-v1.json, `DiarizeRequest`) — the
+# conformance test asserts this table covers every field the spec defines.
+# Supported: handled below. Unsupported: 400 with the spec's validation
+# shape — never silently ignored.
 _SUPPORTED_MODELS = ("community-1",)
+
+# reason per unsupported request field (spec camelCase names).
+_UNSUPPORTED_FIELDS: dict[str, str] = {
+    "numSpeakers":
+        "numSpeakers is not supported: the engine's threshold-based "
+        "clustering detects the speaker count automatically.",
+    "minSpeakers":
+        "minSpeakers is not supported: the engine's threshold-based "
+        "clustering detects the speaker count automatically.",
+    "maxSpeakers":
+        "maxSpeakers is not supported: the engine's threshold-based "
+        "clustering detects the speaker count automatically.",
+    "confidence":
+        "confidence is not supported: the engine does not expose "
+        "per-segment confidence scores.",
+    "turnLevelConfidence":
+        "turnLevelConfidence is not supported: the engine does not "
+        "expose per-turn confidence scores.",
+    "transcription":
+        "transcription (STT orchestration) is not available on this "
+        "endpoint; use POST /v1/audio/transcriptions instead.",
+    "transcriptionConfig":
+        "transcriptionConfig is not available on this endpoint; use "
+        "POST /v1/audio/transcriptions instead.",
+    "vadSensitivity":
+        "vadSensitivity is not supported: it is a precision-3-only "
+        "cloud control and the engine exposes no VAD sensitivity input.",
+    "crosstalkSensitivity":
+        "crosstalkSensitivity is not supported: it is a precision-3-only "
+        "cloud control and the engine exposes no cross-talk input.",
+    "speechProbability":
+        "speechProbability is not supported: the engine does not expose "
+        "frame-level probability curves.",
+    "crosstalkProbability":
+        "crosstalkProbability is not supported: the engine does not "
+        "expose frame-level probability curves.",
+    "speakerProbability":
+        "speakerProbability is not supported: the engine does not "
+        "expose per-speaker probability curves.",
+    "webhook":
+        "webhook is not supported: results return inline in the POST "
+        "response (synchronous engine); use the returned job object "
+        "or GET /v1/jobs/{jobId}.",
+    "webhookStatusOnly":
+        "webhookStatusOnly is not supported: results return inline in "
+        "the POST response (synchronous engine).",
+}
+
 _QUEUE: dict[str, DiarizationJob] = {}
 _QUEUE_MAX = 128
 
@@ -125,6 +173,11 @@ async def diarize(
     turnLevelConfidence: bool = Form(default=False),
     transcription: bool = Form(default=False),
     transcriptionConfig: str | None = Form(default=None),
+    vadSensitivity: float | None = Form(default=None),
+    crosstalkSensitivity: float | None = Form(default=None),
+    speechProbability: bool = Form(default=False),
+    crosstalkProbability: bool = Form(default=False),
+    speakerProbability: bool = Form(default=False),
     webhook: str | None = Form(default=None),
     webhookStatusOnly: bool = Form(default=False),
     pipeline=Depends(get_pipeline),
@@ -133,7 +186,7 @@ async def diarize(
 
     The response is the completed `DiarizationJob` directly (see module
     docstring): status is "succeeded" and `output` is present, so both
-    direct callers and the SDK's poll-once flow finish in one call.
+    direct callers and a poll-once flow finish in one call.
     """
     started = time.perf_counter()
     request_id = uuid4().hex[:8]
@@ -143,7 +196,24 @@ async def diarize(
 
     # Reject unsupported spec fields with the spec's validation shape (see
     # module docstring: silent acceptance would break the convention the
-    # route exists to serve).
+    # route exists to serve). None/False means "unset" for every optional
+    # field, mirroring the spec's own optionality.
+    form = {
+        "numSpeakers": numSpeakers,
+        "minSpeakers": minSpeakers,
+        "maxSpeakers": maxSpeakers,
+        "confidence": confidence,
+        "turnLevelConfidence": turnLevelConfidence,
+        "transcription": transcription,
+        "transcriptionConfig": transcriptionConfig,
+        "vadSensitivity": vadSensitivity,
+        "crosstalkSensitivity": crosstalkSensitivity,
+        "speechProbability": speechProbability,
+        "crosstalkProbability": crosstalkProbability,
+        "speakerProbability": speakerProbability,
+        "webhook": webhook,
+        "webhookStatusOnly": webhookStatusOnly,
+    }
     errors: list[dict] = []
     if model not in _SUPPORTED_MODELS:
         errors.append({
@@ -151,48 +221,9 @@ async def diarize(
             "message": f"Model '{model}' is not supported by this engine. "
                        f"Supported: {', '.join(_SUPPORTED_MODELS)}.",
         })
-    if numSpeakers is not None:
-        errors.append({
-            "field": "numSpeakers",
-            "message": "numSpeakers is not supported: the engine's threshold-based "
-                       "clustering detects the speaker count automatically.",
-        })
-    if minSpeakers is not None:
-        errors.append({
-            "field": "minSpeakers",
-            "message": "minSpeakers is not supported: the engine's threshold-based "
-                       "clustering detects the speaker count automatically.",
-        })
-    if maxSpeakers is not None:
-        errors.append({
-            "field": "maxSpeakers",
-            "message": "maxSpeakers is not supported: the engine's threshold-based "
-                       "clustering detects the speaker count automatically.",
-        })
-    if confidence:
-        errors.append({
-            "field": "confidence",
-            "message": "confidence is not supported: the engine does not expose "
-                       "per-segment confidence scores.",
-        })
-    if turnLevelConfidence:
-        errors.append({
-            "field": "turnLevelConfidence",
-            "message": "turnLevelConfidence is not supported: the engine does not "
-                       "expose per-turn confidence scores.",
-        })
-    if transcription:
-        errors.append({
-            "field": "transcription",
-            "message": "transcription (STT orchestration) is not available on this "
-                       "endpoint; use POST /v1/audio/transcriptions instead.",
-        })
-    if transcriptionConfig is not None:
-        errors.append({
-            "field": "transcriptionConfig",
-            "message": "transcriptionConfig is not available on this endpoint; use "
-                       "POST /v1/audio/transcriptions instead.",
-        })
+    for field, value in form.items():
+        if field in _UNSUPPORTED_FIELDS and value not in (None, False):
+            errors.append({"field": field, "message": _UNSUPPORTED_FIELDS[field]})
     if errors:
         return _validation_response("Invalid request", errors)
 
