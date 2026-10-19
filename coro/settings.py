@@ -30,7 +30,7 @@ PipelineSelector = Literal["full-memory", "streaming"]
 ASRBackendProvider = Literal[
     "faster-whisper", "onnx-asr", "onnx-genai", "nemo", "onnx-parakeet-prompt", "onnx-canary-split"
 ]
-DiarizationBackendProvider = Literal["none", "nemo", "pyannote"]
+DiarizationBackendProvider = Literal["none", "nemo", "pyannote", "speakrs"]
 ASRDevice = Literal["auto", "cuda", "cpu"]
 OnnxVadSelector = Literal["enabled", "disabled"]
 DiarizationDevice = Literal["auto", "cuda", "cpu"]
@@ -191,6 +191,16 @@ class ServerSettings(BaseSettings):
     model_diarization: str | None = Field(default=None, description="Diarization Model Selection.")
     diarization_device: DiarizationDevice = Field(
         default="auto", description="Diarization device selection."
+    )
+    diarization_workers: int = Field(
+        default=4,
+        ge=1,
+        description="Diarization Worker Pool size for pooled backends: the speakrs "
+        "backend loads this many pipeline handles, each on its own CUDA stream, and "
+        "dispatches requests round-robin (at most this many diarization runs execute "
+        "concurrently; further callers queue inside the binding). Measured throughput "
+        "sweet spot for 'speakrs/cuda-fast' is 4 on an RTX 4090 (~2450x aggregate, "
+        "~600x per request). Single-engine providers (nemo, pyannote) ignore it.",
     )
     hf_token: SecretStr | None = Field(
         default=None,
@@ -374,16 +384,19 @@ class ServerSettings(BaseSettings):
                 self.model_diarization = "nvidia/diar_streaming_sortformer_4spk-v2"
             elif self.backend_diarization == "pyannote":
                 self.model_diarization = "pyannote/speaker-diarization-community-1"
+            elif self.backend_diarization == "speakrs":
+                self.model_diarization = "speakrs/cuda-fast"
         return self
 
     @model_validator(mode="after")
     def reject_streaming_pyannote(self) -> ServerSettings:
-        """Reject the Streaming Pipeline for the batch-only pyannote backend."""
-        if self.backend_diarization == "pyannote" and self.pipeline == "streaming":
+        """Reject the Streaming Pipeline for the batch-only backends."""
+        if self.backend_diarization in {"pyannote", "speakrs"} and self.pipeline == "streaming":
             msg = (
-                "The 'pyannote' diarization backend is batch-only and cannot run "
-                "with the 'streaming' pipeline. Use CORO_PIPELINE=full-memory, or "
-                "select a streaming-capable diarization backend (e.g. 'nemo')."
+                f"The '{self.backend_diarization}' diarization backend is batch-only "
+                "and cannot run with the 'streaming' pipeline. Use "
+                "CORO_PIPELINE=full-memory, or select a streaming-capable "
+                "diarization backend (e.g. 'nemo')."
             )
             raise ValueError(msg)
         return self
@@ -443,7 +456,11 @@ class ServerSettings(BaseSettings):
         single-speaker hypotheses that look like a diarization quality
         regression rather than a configuration error.
         """
-        if self.backend_diarization != "none" and not (self.model_diarization or "").strip():
+        if (
+            self.backend_diarization != "none"
+            and self.backend_diarization in {"nemo", "pyannote"}
+            and not (self.model_diarization or "").strip()
+        ):
             msg = (
                 f"Diarization Backend Provider '{self.backend_diarization}' is selected but "
                 "the Diarization Model Selection is empty. Set CORO_MODEL_DIARIZATION to a "

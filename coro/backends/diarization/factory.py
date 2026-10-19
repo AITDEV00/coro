@@ -35,6 +35,7 @@ def build_diarization_adapter(
     hf_token: str | None = None,
     postprocessing: str | None = None,
     postprocessing_max_speakers: int = DEFAULT_MAX_SPEAKERS,
+    workers: int = 4,
 ) -> DiarizationAdapter:
     """Build a Diarization Adapter for the configured provider.
 
@@ -48,6 +49,9 @@ def build_diarization_adapter(
             (see ADR 0010); NeMo-specific, ignored by ``pyannote``.
         postprocessing_max_speakers: Speaker-Count Post-Processing Gate
             ceiling; NeMo-specific, ignored by ``pyannote``.
+        workers: Worker Pool size; consumed by pooled backends
+            (``speakrs``), ignored by single-engine providers (``nemo``,
+            ``pyannote``).
 
     Returns:
         A ready-to-use Diarization Adapter.
@@ -71,6 +75,13 @@ def build_diarization_adapter(
 
         return build_pyannote_diarization_adapter(
             model_diarization, device=device, hf_token=hf_token
+        )
+
+    if provider == "speakrs":
+        from coro.backends.diarization.speakrs import build_speakrs_diarization_adapter
+
+        return build_speakrs_diarization_adapter(
+            model_diarization, device=device, workers=workers, hf_token=hf_token
         )
 
     msg = f"Unknown diarization backend provider: {provider!r}"

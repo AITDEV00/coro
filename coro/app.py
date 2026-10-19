@@ -136,6 +136,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 hf_token=settings.hf_token.get_secret_value() if settings.hf_token else None,
                 postprocessing=settings.diarization_postprocessing,
                 postprocessing_max_speakers=settings.diarization_postprocessing_max_speakers,
+                workers=settings.diarization_workers,
             )
             runtime.diarization_adapter = diarization_adapter
 

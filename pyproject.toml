@@ -120,6 +120,12 @@ cuda = [
 diar-pyannote = [
     "pyannote.audio>=4.0",
 ]
+# The third gated diarization backend, speakrs (native Rust/CUDA community-1),
+# intentionally has NO uv extra here: speakrs is not published to PyPI, so a
+# requirement would make the lockfile unsatisfiable. Build the abi3 wheel from
+# avencera/speakrs (maturin; Linux x86_64 ships CUDA) and pip install it into
+# the environment; the backend raises an error naming these steps when the
+# import is missing. See docs/adr/0025-speakrs-diarization-backend.md.
 # coro.recipes: reproducible ONNX export/quantization scripts that feed the
 # comparative-reference ASR backends' artifact-directory contracts (see
 # coro/recipes/__init__.py). Dev/export-time tooling, never imported by the
