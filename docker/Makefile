@@ -68,6 +68,11 @@ ADEO_REGISTRY_PATH ?= openinnovationai/platform/mlops/mlops-serving
 ADEO_IMAGE ?= $(ADEO_REGISTRY)/$(ADEO_REGISTRY_PATH)/coro
 ADEO_TAG ?= $(ADEO_IMAGE):speakrs
 ADEO_PORT ?= 8080
+# Harbor robot account for the mlops-serving namespace. Defaults make `make
+# login` non-interactive; override either on the command line for other
+# accounts:  make login ADEO_REGISTRY_USER=... ADEO_REGISTRY_PASSWORD=...
+ADEO_REGISTRY_USER ?= custom-images
+ADEO_REGISTRY_PASSWORD ?= CustomImages123
 
 .PHONY: help
 help: ## Show this help.
@@ -108,8 +113,8 @@ run-speakrs-cuda: ## Run the speakrs backend on the accuracy tier (CORO_DIARIZAT
 		$(IMAGE_NAME):gpu serve --port $(PORT) --backend-diarization speakrs
 
 .PHONY: login
-login: ## Log in to the ADEO Harbor registry (docker login; credentials from your ~/.docker/config.json or interactive).
-	docker login $(ADEO_REGISTRY)
+login: ## Log in to the ADEO Harbor registry (non-interactive; ADEO_REGISTRY_USER/PASSWORD defaults).
+	@printf '%s' '$(ADEO_REGISTRY_PASSWORD)' | docker login $(ADEO_REGISTRY) -u '$(ADEO_REGISTRY_USER)' --password-stdin
 
 .PHONY: fetch-models
 fetch-models: ## Export the pinned speakrs weights from the HF cache into docker/models/speakrs/ (run once after a local speakrs run).
