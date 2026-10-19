@@ -212,3 +212,37 @@ async def test_get_job_unknown_id_is_validation_shaped():
     assert resp.status_code == 400
     body = resp.json()
     assert "message" in body and "errors" in body
+
+
+# ---------------------------------------------------------------------------
+# CORO_PYANNOTE_DIARIZE_MODEL_ID — serving model id rename
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_renamed_model_id_is_accepted_and_default_rejected():
+    """CORO_PYANNOTE_DIARIZE_MODEL_ID renames the accepted id end to end."""
+    app = create_app(
+        ServerSettings(pyannote_diarize_model_id="pyannote/community-1")
+    )
+    runtime = RuntimeState(asr_adapter=object())
+    runtime.pipeline = _FakePipeline(_FakeDiarization())
+    app.state.runtime = runtime
+
+    # The renamed id is accepted and served.
+    status, body = await _post_diarize(app, extra={"model": "pyannote/community-1"})
+    assert status == 200
+    assert body["status"] == "succeeded"
+
+    # The spec default is now rejected with the spec's validation shape.
+    status, body = await _post_diarize(app, extra={"model": "community-1"})
+    assert status == 400
+    model_errors = [e for e in body["errors"] if e["field"] == "model"]
+    assert model_errors and "pyannote/community-1" in model_errors[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_default_settings_still_accept_community_1():
+    """Without the override the pyannoteAI spec enum value must keep working."""
+    status, _ = await _post_diarize(_app_with_pipeline(_FakePipeline(_FakeDiarization())))
+    assert status == 200

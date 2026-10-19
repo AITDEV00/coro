@@ -209,6 +209,15 @@ class ServerSettings(BaseSettings):
         "default) or 'cuda' (1 s step, accuracy). Ignored by every other "
         "Diarization Backend Provider.",
     )
+    pyannote_diarize_model_id: str = Field(
+        default="community-1",
+        min_length=1,
+        description="Model id the pyannoteAI /v1/diarize route accepts and echoes "
+        "in job responses. Default is the pyannoteAI spec enum value "
+        "'community-1'; set CORO_PYANNOTE_DIARIZE_MODEL_ID to rename it for "
+        "gateway deployments (e.g. 'pyannote/community-1'). The served weights "
+        "do not change — this is the request/response id only.",
+    )
     hf_token: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("CORO_HF_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"),

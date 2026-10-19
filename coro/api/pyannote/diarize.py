@@ -56,11 +56,12 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from coro.api.dependencies import get_pipeline
+from coro.api.dependencies import get_pipeline, get_settings
 from coro.api.openai.transcriptions import _rate_limit_error
 from coro.api.rate_limit import admit_request, admit_upload
 from coro.audio import AudioConversionError, AudioInput
 from coro.pipelines.full_memory import DiarizeResult
+from coro.settings import ServerSettings
 
 
 # MARK: Router Configuration
@@ -101,7 +102,14 @@ class DiarizationJob(BaseModel):
 # conformance test asserts this table covers every field the spec defines.
 # Supported: handled below. Unsupported: 400 with the spec's validation
 # shape — never silently ignored.
-_SUPPORTED_MODELS = ("community-1",)
+#
+# The accepted model id is settings-driven (ServerSettings.pyannote_diarize_model_id,
+# env CORO_PYANNOTE_DIARIZE_MODEL_ID): the pyannoteAI spec's enum names this
+# engine "community-1" — the default — but a gateway deployment can rename
+# the id it accepts and echoes (e.g. "pyannote/community-1"). The served
+# weights never change; spec enum values other than the accepted id are
+# rejected with the spec's validation shape either way.
+_DEFAULT_MODEL_ID = "community-1"
 
 # reason per unsupported request field (spec camelCase names).
 _UNSUPPORTED_FIELDS: dict[str, str] = {
@@ -181,6 +189,7 @@ async def diarize(
     webhook: str | None = Form(default=None),
     webhookStatusOnly: bool = Form(default=False),
     pipeline=Depends(get_pipeline),
+    settings: ServerSettings = Depends(get_settings),
 ) -> JSONResponse:
     """Diarize audio following the pyannoteAI `POST /v1/diarize` conventions.
 
@@ -214,12 +223,13 @@ async def diarize(
         "webhook": webhook,
         "webhookStatusOnly": webhookStatusOnly,
     }
+    accepted_model = settings.pyannote_diarize_model_id or _DEFAULT_MODEL_ID
     errors: list[dict] = []
-    if model not in _SUPPORTED_MODELS:
+    if model not in (accepted_model,):
         errors.append({
             "field": "model",
             "message": f"Model '{model}' is not supported by this engine. "
-                       f"Supported: {', '.join(_SUPPORTED_MODELS)}.",
+                       f"Supported: {accepted_model}.",
         })
     for field, value in form.items():
         if field in _UNSUPPORTED_FIELDS and value not in (None, False):

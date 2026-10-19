@@ -29,7 +29,7 @@ from coro.api.pyannote.diarize import (
     DiarizationJob,
     DiarizationJobOutput,
     DiarizationSegment,
-    _SUPPORTED_MODELS,
+    _DEFAULT_MODEL_ID,
     _UNSUPPORTED_FIELDS,
 )
 
@@ -68,7 +68,7 @@ def test_route_covers_every_diarize_request_field(spec):
 
     handler = module.diarize
     params = inspect.signature(handler).parameters
-    route_fields = set(params) - {"request", "pipeline"}  # fastapi plumbing
+    route_fields = set(params) - {"request", "pipeline", "settings"}  # fastapi plumbing
     # Transport mapping: the spec's `url` (fetchable remote reference) is
     # coro's multipart `file` upload — same field, different transport
     # (see the route module docstring).
@@ -92,12 +92,17 @@ def test_supported_plus_unsupported_covers_non_file_fields(spec):
 
 
 def test_model_must_be_exactly_community_1(spec):
-    """community-1 is the only supported model id (the engine IS community-1)."""
+    """The default accepted model id is community-1 (the engine IS community-1).
+
+    Deployments may rename the accepted id via CORO_PYANNOTE_DIARIZE_MODEL_ID
+    (e.g. "pyannote/community-1" for a gateway); the default must stay the
+    pyannoteAI spec enum value so the cloud contract holds out of the box.
+    """
     request_schema = _schema(spec, "DiarizeRequest")
     spec_models = set(request_schema["properties"]["model"]["enum"])
-    assert _SUPPORTED_MODELS == ("community-1",)
+    assert _DEFAULT_MODEL_ID == "community-1"
     assert "community-1" in spec_models  # sanity: still a valid upstream value
-    rejected = spec_models - set(_SUPPORTED_MODELS)
+    rejected = spec_models - {_DEFAULT_MODEL_ID}
     assert rejected, "upstream dropped all other models? update the rejection test"
     assert rejected == {"precision-2", "precision-3"}, (
         f"Upstream model enum changed: {sorted(spec_models)} — update the route's "
