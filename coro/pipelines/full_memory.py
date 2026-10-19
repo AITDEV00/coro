@@ -3,13 +3,29 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 from coro.audio import BYTES_PER_SAMPLE, SAMPLE_RATE, AudioInput, convert_path_to_pcm_bytes
 from coro.core.response import build_transcription_response
 from coro.core.protocols import ASRAdapter, DiarizationAdapter
 from coro.core.models import TokenBatchEvent, TranscriptDoneEvent, TranscriptionResult
 from coro.pipelines.windowing import ASRWindowing, LanguageState
+
+
+@dataclass(frozen=True)
+class DiarizeResult:
+    """Native diarization output for the pyannoteAI-compatible API.
+
+    ``segments`` preserves overlapping speech; ``exclusive_segments`` is the
+    one-speaker-at-a-time view (speakrs' ``exclusive_segments`` — overlaps go
+    to the speaker with the highest activation). Speaker labels are the
+    backend's native strings (e.g. ``SPEAKER_00``), NOT the 1-indexed ints the
+    internal pipeline uses: the pyannoteAI contract is string-labelled.
+    """
+
+    duration: float
+    segments: list  # objects with .start/.end/.speaker (str)
+    exclusive_segments: list | None = None
 
 
 # MARK: Full-Memory Pipeline
@@ -92,6 +108,43 @@ class FullMemoryPipeline:
                 for s in timeline
             ]
             return duration, segments
+        finally:
+            await audio.cleanup()
+
+    # Native Diarization (pyannoteAI-compatible) -----------------------------
+    async def diarize_full(self, audio: AudioInput, *, exclusive: bool = False) -> DiarizeResult:
+        """Decode the upload and return native, string-labelled diarization.
+
+        The pyannoteAI-contract counterpart of ``diarize()``: speaker labels
+        stay in the backend's native string form (``SPEAKER_00``) and the
+        exclusive view is available, so POST /v1/diarize can answer with the
+        exact ``DiarizationJobOutput`` shape. Requires a diarization adapter
+        that exposes ``diarize_pcm_full`` (the speakrs backend does); other
+        backends raise ``ValueError`` — the API surface degrades honestly to
+        a spec-shaped 400, never to a silently different output.
+        """
+        try:
+            if self._diarization is None:
+                msg = (
+                    "Diarization is not enabled on this server "
+                    "(CORO_BACKEND_DIARIZATION)."
+                )
+                raise ValueError(msg)
+            diarize_full = getattr(self._diarization, "diarize_pcm_full", None)
+            if diarize_full is None:
+                msg = (
+                    "The configured diarization backend does not expose the "
+                    "native output this API requires (diarize_pcm_full)."
+                )
+                raise ValueError(msg)
+            pcm = await self._pcm(audio)
+            duration = len(pcm) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+            segments, exclusive_segments = await diarize_full(pcm)
+            return DiarizeResult(
+                duration=duration,
+                segments=segments,
+                exclusive_segments=exclusive_segments if exclusive else None,
+            )
         finally:
             await audio.cleanup()
 

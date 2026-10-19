@@ -153,6 +153,21 @@ class SpeakrsDiarizationAdapter:
         ]
         return convert_diarization_segments(native_segments, duration=duration)
 
+    async def diarize_pcm_full(self, pcm: bytes) -> tuple[list, list]:
+        """Run diarization and return native, string-labelled segments.
+
+        The pyannoteAI-contract counterpart of ``diarize_pcm``: keeps the
+        backend's native ``SPEAKER_XX`` string labels (instead of mapping to
+        the internal 1-indexed ints) and also returns the exclusive view
+        (at most one speaker at a time; overlaps go to the highest-activation
+        speaker) for the spec's ``exclusiveDiarization`` field. Serves
+        FullMemoryPipeline.diarize_full → POST /v1/diarize.
+        """
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+        pipeline = next(self._cycle)
+        result = await pipeline.diarize_samples_async(samples)
+        return result.segments, result.exclusive_segments
+
 
 def build_speakrs_diarization_adapter(
     model_diarization: str,
