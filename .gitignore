@@ -57,3 +57,5 @@ __pycache__/
 
 # Local speakrs wheels for docker builds (docker/Makefile picks them up)
 docker/wheels/
+# Exported speakrs weights for the ADEO image (make fetch-models)
+docker/models/

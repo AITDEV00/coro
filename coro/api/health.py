@@ -11,7 +11,10 @@ router = APIRouter()
 
 
 # MARK: Health Endpoint
+# "/health-check" is an alias kept for cluster healthcheck conventions (the
+# omnivoice-server layout probes it); both names share one handler.
 @router.get("/health")
+@router.get("/health-check")
 async def health(request: Request) -> JSONResponse:
     """Return startup selection and capability readiness."""
     runtime = request.app.state.runtime
