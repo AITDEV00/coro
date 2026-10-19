@@ -123,7 +123,21 @@ def _load_pipeline_pool(mode: str, workers: int) -> list[Any]:
         raise RuntimeError(msg) from exc
 
     logger.info("Preparing speakrs assets for mode '%s' (%d workers).", mode, workers)
-    prepared = speakrs.prepare(mode)
+    # Prefer the baked model directory: `prepare(mode, model_dir=...)` skips
+    # hub resolution entirely (no network, no HF cache layout, no refs
+    # bookkeeping), which is what makes it immune to offline clusters. The
+    # path is baked into the ADEO image via SPEAKRS_MODEL_DIR; when it is
+    # absent (dev machines, slim images) fall back to the normal cache-or-
+    # download flow, which works wherever egress exists.
+    import os
+
+    model_dir = os.environ.get("SPEAKRS_MODEL_DIR", "/home/runner/models/speakrs")
+    if os.path.isdir(model_dir):
+        logger.info("Loading speakrs models from baked dir '%s'.", model_dir)
+        prepared = speakrs.prepare(mode, model_dir=model_dir)
+    else:
+        logger.info("No baked model dir at '%s'; resolving via HF cache.", model_dir)
+        prepared = speakrs.prepare(mode)
     return [speakrs.Pipeline.from_prepared(prepared) for _ in range(workers)]
 
 
