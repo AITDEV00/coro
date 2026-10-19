@@ -44,7 +44,9 @@ TAG ?= $(IMAGE_NAME):$(FLAVOUR)
 # context is the repo root, so the build-arg path is prefixed accordingly.
 # Drop the maturin-built wheel into docker/wheels/ and it is picked up
 # automatically; or pass SPEAKRS_WHEEL=<path-from-repo-root> explicitly.
-SPEAKRS_WHEEL_FILE ?= $(wildcard wheels/speakrs-*-linux_x86_64.whl)
+# (maturin's real tag is manylinux_2_35_x86_64, so match any speakrs wheel;
+# firstword keeps the build-arg a single path if several are staged.)
+SPEAKRS_WHEEL_FILE ?= $(firstword $(wildcard wheels/speakrs-*.whl))
 ifneq ($(SPEAKRS_WHEEL_FILE),)
 SPEAKRS_BUILD_ARG := --build-arg SPEAKRS_WHEEL=docker/$(SPEAKRS_WHEEL_FILE)
 endif
@@ -125,7 +127,7 @@ fetch-models: ## Export the pinned speakrs weights from the HF cache into docker
 
 .PHONY: adeo
 adeo: ## Build the ADEO cluster image (port 8080, UID 10000, baked weights, /health-check).
-	docker build -f docker/Dockerfile.adeo -t $(ADEO_TAG) ..
+	docker build -f docker/Dockerfile.adeo -t $(ADEO_TAG) $(SPEAKRS_BUILD_ARG) ..
 
 .PHONY: adeo-push
 adeo-push: ## Push the ADEO image to the Harbor registry (requires make login first).

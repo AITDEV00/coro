@@ -80,13 +80,25 @@ RUN groupadd -g 10000 runner \
     && mkdir -p /home/runner/app /home/runner/models \
     && chown -R runner:runner /home/runner
 
+# NOTE: PATH gets its own ENV instruction — keys in one ENV statement cannot
+# reference variables set earlier in the SAME statement, so
+# PATH="${VIRTUAL_ENV}/bin:$PATH" here would expand VIRTUAL_ENV to empty
+# (the smoke-test "exec: coro: Is a directory" bug: bash fell through to the
+# ./coro source directory in the workdir).
 ENV VIRTUAL_ENV=/home/runner/venv \
     HOME=/tmp/runner \
-    TMPDIR=/tmp/runner/tmp \
-    PATH="${VIRTUAL_ENV}/bin:$PATH"
+    TMPDIR=/tmp/runner/tmp
+ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
 
 # Drop to UID 10000 for everything that writes under /home/runner.
 USER runner
+
+# uv cache home (podman note: --mount=type=cache targets are created
+# root-owned, which broke the runner-user sync steps; so the cache lives in
+# the runner-owned home instead of a cache mount, and is deleted in the last
+# build step to keep the image slim).
+ENV UV_CACHE_DIR=/home/runner/.cache/uv
+RUN mkdir -p /home/runner/.cache/uv
 
 WORKDIR /home/runner/app
 
@@ -109,14 +121,12 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.12 --chown=runner:runner /uv /uvx /bin/
 # Resolve dependencies first (cached): lock + metadata only, then the project.
 COPY --chown=runner:runner pyproject.toml uv.lock README.md LICENSE ./
 
-RUN --mount=type=cache,target=/tmp/runner/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev --no-editable \
+RUN uv sync --frozen --no-install-project --no-dev --no-editable \
         --no-install-package triton --extra ${EXTRA}
 
 COPY --chown=runner:runner coro ./coro
 
-RUN --mount=type=cache,target=/tmp/runner/.cache/uv \
-    uv sync --frozen --no-dev --no-editable \
+RUN uv sync --frozen --no-dev --no-editable \
         --no-install-package triton --extra ${EXTRA}
 
 # Optional speakrs wheel (docker/wheels/, gitignored; maturin build from
@@ -124,19 +134,26 @@ RUN --mount=type=cache,target=/tmp/runner/.cache/uv \
 # already resolve from the venv (torch cu13 cuDNN via LD_LIBRARY_PATH,
 # nvidia-cublas-cu12 from the cuda extra). A missing wheel keeps the build
 # working; the backend names the install steps at startup if selected.
-ARG SPEAKRS_WHEEL=docker/wheels/speakrs-0.7.0-cp311-abi3-linux_x86_64.whl
-COPY --chown=runner:runner ${SPEAKRS_WHEEL} /tmp/speakrs-wheel.whl
-RUN uv pip install --python ${VIRTUAL_ENV}/bin/python --no-deps /tmp/speakrs-wheel.whl \
-    && rm /tmp/speakrs-wheel.whl
+# The default matches the maturin output (manylinux_2_35 abi3); the Makefile
+# passes the staged wheel explicitly via --build-arg.
+# Copy into a directory, NOT a renamed file: uv validates wheel filenames
+# (needs the python/abi/platform tags), so the original maturin name must
+# survive the COPY. Same pattern as the public docker/Dockerfile.
+ARG SPEAKRS_WHEEL=docker/wheels/speakrs-0.7.0-cp311-abi3-manylinux_2_35_x86_64.whl
+COPY --chown=runner:runner ${SPEAKRS_WHEEL} /tmp/speakrs-wheel/
+RUN uv pip install --python ${VIRTUAL_ENV}/bin/python --no-deps /tmp/speakrs-wheel/*.whl \
+    && rm -rf /tmp/speakrs-wheel
 
-# Self-host the Scalar docs bundle (same as the public image).
+# Self-host the Scalar docs bundle (same as the public image), then drop the
+# uv cache so the shipped layers carry only the venv.
 RUN ${VIRTUAL_ENV}/bin/python -c "\
 import urllib.request; \
 from coro.api.docs import SCALAR_CDN_URL, bundle_path; \
 target = bundle_path(); \
 target.parent.mkdir(parents=True, exist_ok=True); \
 urllib.request.urlretrieve(SCALAR_CDN_URL, target); \
-print('scalar bundle', target, target.stat().st_size, 'bytes')"
+print('scalar bundle', target, target.stat().st_size, 'bytes')" \
+    && rm -rf /home/runner/.cache
 
 # ══════════════════════════════════════════════════════════════════════════
 # VOLATILE LAYERS BELOW — weights, entrypoint, config.
@@ -195,5 +212,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 USER runner
 
 # Single foreground process; the entrypoint exec's coro serve as PID 1.
+# Absolute path: exec must not depend on PATH lookup (the earlier PATH bug
+# made bash resolve `coro` to the ./coro source directory and die with EISDIR).
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["coro", "serve", "--port", "8080"]
+CMD ["/home/runner/venv/bin/coro", "serve", "--port", "8080"]
