@@ -66,6 +66,35 @@ class FullMemoryPipeline:
         finally:
             await audio.cleanup()
 
+    # Diarization-Only -------------------------------------------------------
+    async def diarize(self, audio: AudioInput) -> tuple[float, list[dict]]:
+        """Decode the upload and return (duration_s, speaker segments).
+
+        The diarization-only counterpart of ``transcribe()``: same decode path
+        and temp-file ownership, no ASR windowing. Serves POST /v1/audio/
+        diarization — first-class for the speakrs backend, where skipping ASR
+        turns a seconds-scale request into milliseconds. Raises ``ValueError``
+        when no diarization adapter is configured; the route maps that to the
+        OpenAI-style 400 (an ASR-Only Server must reject, not 500).
+        """
+        try:
+            if self._diarization is None:
+                msg = (
+                    "Diarization is not enabled on this server "
+                    "(CORO_BACKEND_DIARIZATION)."
+                )
+                raise ValueError(msg)
+            pcm = await self._pcm(audio)
+            duration = len(pcm) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+            timeline = await self._diarization.diarize_pcm(pcm)
+            segments = [
+                {"start": round(s.start, 3), "end": round(s.end, 3), "speaker": s.speaker}
+                for s in timeline
+            ]
+            return duration, segments
+        finally:
+            await audio.cleanup()
+
     # Streaming Transcription ----------------------------------------------
     async def stream(
         self,

@@ -226,12 +226,14 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     from coro.api.deepgram.listen import router as listen_router
     from coro.api.deepgram.listen_ws import router as listen_ws_router
     from coro.api.openai.transcriptions import router as v1_router
+    from coro.api.openai.diarization import router as diarization_router
 
     application.state.settings = settings
     application.state.runtime = runtime
     application.state.rate_limits = ClientRateLimits.from_settings(settings)
     application.include_router(health_router)
     application.include_router(v1_router)
+    application.include_router(diarization_router)
     application.include_router(listen_router)
     application.include_router(listen_ws_router)
 
