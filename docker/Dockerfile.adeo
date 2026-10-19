@@ -248,6 +248,7 @@ ENV CORO_BACKEND_DIARIZATION=speakrs \
     CORO_DIARIZATION_SPEAKRS_MODE=cuda-fast \
     CORO_DIARIZATION_WORKERS=4 \
     CORO_MODEL_DIARIZATION=pyannote/speaker-diarization-community-1 \
+    CORO_PYANNOTE_DIARIZE_MODEL_ID=pyannote/community-1 \
     CORO_ASR_DEVICE=cpu \
     HF_HUB_OFFLINE=1 \
     SPEAKRS_MODEL_DIR=/home/runner/models/speakrs \
