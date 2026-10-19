@@ -31,6 +31,7 @@ ASRBackendProvider = Literal[
     "faster-whisper", "onnx-asr", "onnx-genai", "nemo", "onnx-parakeet-prompt", "onnx-canary-split"
 ]
 DiarizationBackendProvider = Literal["none", "nemo", "pyannote", "speakrs"]
+DiarizationSpeakrsMode = Literal["cuda-fast", "cuda"]
 ASRDevice = Literal["auto", "cuda", "cpu"]
 OnnxVadSelector = Literal["enabled", "disabled"]
 DiarizationDevice = Literal["auto", "cuda", "cpu"]
@@ -199,8 +200,14 @@ class ServerSettings(BaseSettings):
         "backend loads this many pipeline handles, each on its own CUDA stream, and "
         "dispatches requests round-robin (at most this many diarization runs execute "
         "concurrently; further callers queue inside the binding). Measured throughput "
-        "sweet spot for 'speakrs/cuda-fast' is 4 on an RTX 4090 (~2450x aggregate, "
+        "sweet spot for the cuda-fast tier is 4 on an RTX 4090 (~2450x aggregate, "
         "~600x per request). Single-engine providers (nemo, pyannote) ignore it.",
+    )
+    diarization_speakrs_mode: DiarizationSpeakrsMode = Field(
+        default="cuda-fast",
+        description="speakrs compute tier. 'cuda-fast' (2 s hop, throughput; the "
+        "default) or 'cuda' (1 s step, accuracy). Ignored by every other "
+        "Diarization Backend Provider.",
     )
     hf_token: SecretStr | None = Field(
         default=None,
@@ -382,10 +389,10 @@ class ServerSettings(BaseSettings):
         if self.model_diarization is None:
             if self.backend_diarization == "nemo":
                 self.model_diarization = "nvidia/diar_streaming_sortformer_4spk-v2"
-            elif self.backend_diarization == "pyannote":
+            elif self.backend_diarization in {"pyannote", "speakrs"}:
+                # Both engines serve the same community-1 pipeline id, so a
+                # gateway can route or fail over between them under one name.
                 self.model_diarization = "pyannote/speaker-diarization-community-1"
-            elif self.backend_diarization == "speakrs":
-                self.model_diarization = "speakrs/cuda-fast"
         return self
 
     @model_validator(mode="after")

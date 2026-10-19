@@ -36,6 +36,7 @@ def build_diarization_adapter(
     postprocessing: str | None = None,
     postprocessing_max_speakers: int = DEFAULT_MAX_SPEAKERS,
     workers: int = 4,
+    speakrs_mode: str = "cuda-fast",
 ) -> DiarizationAdapter:
     """Build a Diarization Adapter for the configured provider.
 
@@ -52,6 +53,8 @@ def build_diarization_adapter(
         workers: Worker Pool size; consumed by pooled backends
             (``speakrs``), ignored by single-engine providers (``nemo``,
             ``pyannote``).
+        speakrs_mode: speakrs compute tier, ``cuda-fast`` or ``cuda``;
+            ignored by every other provider.
 
     Returns:
         A ready-to-use Diarization Adapter.
@@ -81,7 +84,11 @@ def build_diarization_adapter(
         from coro.backends.diarization.speakrs import build_speakrs_diarization_adapter
 
         return build_speakrs_diarization_adapter(
-            model_diarization, device=device, workers=workers, hf_token=hf_token
+            model_diarization,
+            device=device,
+            workers=workers,
+            hf_token=hf_token,
+            speakrs_mode=speakrs_mode,
         )
 
     msg = f"Unknown diarization backend provider: {provider!r}"

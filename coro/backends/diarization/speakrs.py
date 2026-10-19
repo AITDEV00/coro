@@ -5,12 +5,15 @@ pyannote community-1 pipeline) as a batch Diarization Adapter. speakrs cannot
 stream: clustering needs the whole recording, exactly like the pyannote
 backend, so the Streaming Pipeline rejects this provider at startup.
 
-The Diarization Model Selection names the speakrs Execution Mode rather than a
-Hugging Face repository: ``speakrs/cuda-fast`` (2 s hop, throughput tier),
-``speakrs/cuda`` (1 s step, accuracy tier), and ``speakrs/cpu`` (native Rust
-CPU). A ``speakrs/`` prefix is optional. Model weights come from the pinned
-``avencera/speakrs-models`` revision inside the wheel (public, no HF token
-required), so an HF-style id would be meaningless here.
+The Diarization Model Selection keeps its pipeline identity — ``pyannote/
+speaker-diarization-community-1``, the same id the pyannote backend uses —
+so both engines serve the same model name and a gateway can route or
+fail over between them interchangeably. speakrs weights come from the pinned
+public ``avencera/speakrs-models`` revision inside the wheel (no HF token
+required), which is why the id names the pipeline rather than the weights
+repository. The compute tier is a separate setting
+(``CORO_DIARIZATION_SPEAKRS_MODE``): ``cuda-fast`` (2 s hop, throughput)
+or ``cuda`` (1 s step, accuracy). The backend is GPU-only.
 
 Adapter Concurrency Policy: pooled. The builder loads ``workers`` pipeline
 handles (each its own CUDA stream, mirroring ``clone_shared`` semantics) and
@@ -33,57 +36,55 @@ from coro.core.models import SpeakerSegment
 
 logger = logging.getLogger(__name__)
 
-# Model-id token -> speakrs Execution Mode value. The binding accepts these
-# spellings directly ("case, `-`, and `_` are ignored"), so no mapping layer
-# beyond prefix stripping and normalization is needed.
-_MODE_BY_TOKEN: dict[str, str] = {
-    "cuda": "cuda",
-    "cuda-fast": "cuda-fast",
-    "cpu": "cpu",
-}
+# The model id this backend serves — the same pipeline identity as the
+# pyannote backend, so both engines are addressable under one model name.
+SPEAKRS_MODEL_ID = "pyannote/speaker-diarization-community-1"
 
-_VALID_MODEL_IDS = ", ".join(f"'speakrs/{mode}'" for mode in _MODE_BY_TOKEN)
+# speakrs Execution Mode values accepted by the ``speakrs_mode`` setting.
+SUPPORTED_MODES = ("cuda-fast", "cuda")
 
 
-def _resolve_mode(model_diarization: str | None, device: str) -> str:
-    """Resolve the Diarization Model Selection and device to a speakrs mode.
+def _resolve_mode(model_diarization: str, speakrs_mode: str, device: str) -> str:
+    """Resolve the model id, compute tier, and device to a speakrs mode.
 
     Args:
-        model_diarization: Model id such as ``speakrs/cuda-fast``; the
-            ``speakrs/`` prefix is optional and the tier token is normalized.
-        device: ``auto``/``cuda``/``cpu`` Diarization device selection. ``auto``
-            keeps the mode named by the model id; an explicit device must not
-            contradict it (Strict Startup Validation, not a silent override).
+        model_diarization: Diarization Model Selection; must be the community-1
+            pipeline id (the same id the pyannote backend serves).
+        speakrs_mode: ``cuda-fast`` (2 s hop, throughput) or ``cuda`` (1 s
+            step, accuracy).
+        device: ``auto``/``cuda``/``cpu`` Diarization device selection. This
+            backend is GPU-only: ``auto`` and ``cuda`` are accepted, ``cpu``
+            fails Strict Startup Validation rather than silently running on
+            CPU.
 
     Returns:
-        The speakrs Execution Mode value (``cuda``, ``cuda-fast``, ``cpu``).
+        The speakrs Execution Mode value (``cuda`` or ``cuda-fast``).
 
     Raises:
-        ValueError: If the model id is not a speakrs mode, or the device
-            contradicts it.
+        ValueError: If the model id is not the community-1 pipeline, the
+            tier is unsupported, or the device is ``cpu``.
 
     """
-    token = (model_diarization or "").strip().removeprefix("speakrs/").lower().replace("_", "-")
-    mode = _MODE_BY_TOKEN.get(token)
-    if mode is None:
+    if (model_diarization or "").strip() != SPEAKRS_MODEL_ID:
         msg = (
-            f"'{model_diarization}' is not a speakrs diarization mode. "
-            f"Use one of {_VALID_MODEL_IDS}."
+            f"The speakrs backend serves '{SPEAKRS_MODEL_ID}' but got "
+            f"'{model_diarization}'. Both diarization engines use the same "
+            "model id; set CORO_MODEL_DIARIZATION accordingly (the default "
+            "when CORO_BACKEND_DIARIZATION=speakrs)."
         )
         raise ValueError(msg)
-    if device == "cpu" and mode != "cpu":
+    if speakrs_mode not in SUPPORTED_MODES:
+        valid = " or ".join(f"'{mode}'" for mode in SUPPORTED_MODES)
+        msg = f"Unsupported speakrs mode '{speakrs_mode}'. Use {valid}."
+        raise ValueError(msg)
+    if device == "cpu":
         msg = (
-            f"Device 'cpu' contradicts diarization model '{model_diarization}'. "
-            "Use CORO_DIARIZATION_DEVICE=auto, or select 'speakrs/cpu'."
+            "The speakrs backend is GPU-only: CORO_DIARIZATION_DEVICE=cpu is "
+            "not supported. Use 'auto' or 'cuda', or select the pyannote "
+            "backend for CPU inference."
         )
         raise ValueError(msg)
-    if device == "cuda" and mode == "cpu":
-        msg = (
-            f"Device 'cuda' contradicts diarization model '{model_diarization}'. "
-            "Use CORO_DIARIZATION_DEVICE=auto, or select a CUDA tier."
-        )
-        raise ValueError(msg)
-    return mode
+    return speakrs_mode
 
 
 def _load_pipeline_pool(mode: str, workers: int) -> list[Any]:
@@ -156,6 +157,7 @@ class SpeakrsDiarizationAdapter:
 def build_speakrs_diarization_adapter(
     model_diarization: str,
     *,
+    speakrs_mode: str = "cuda-fast",
     device: str = "auto",
     workers: int = 4,
     hf_token: str | None = None,
@@ -163,10 +165,13 @@ def build_speakrs_diarization_adapter(
     """Construct and return a SpeakrsDiarizationAdapter.
 
     Args:
-        model_diarization: speakrs mode id, e.g. ``speakrs/cuda-fast``. See
-            ``_resolve_mode`` for accepted spellings and device interaction.
-        device: ``auto``/``cuda``/``cpu`` device selector; must not contradict
-            the model id.
+        model_diarization: must be ``pyannote/speaker-diarization-community-1``
+            (the same id the pyannote backend serves, so a gateway can route
+            between the engines under one model name).
+        speakrs_mode: ``cuda-fast`` (2 s hop, throughput; default) or ``cuda``
+            (1 s step, accuracy).
+        device: ``auto``/``cuda``/``cpu`` device selector; this backend is
+            GPU-only, so ``cpu`` is rejected.
         workers: Worker Pool size. Each handle owns a CUDA stream; 4 is the
             measured throughput sweet spot for ``cuda-fast`` on an RTX 4090
             (~2450x aggregate RTFx at ~600x per request).
@@ -177,12 +182,13 @@ def build_speakrs_diarization_adapter(
         A ready-to-use SpeakrsDiarizationAdapter.
 
     Raises:
-        ValueError: If the model id is not a speakrs mode, the device
-            contradicts it, or ``workers`` is not a positive integer.
+        ValueError: If the model id is not the community-1 pipeline, the tier
+            is unsupported, the device is ``cpu``, or ``workers`` is not a
+            positive integer.
         RuntimeError: If the ``speakrs`` wheel is not installed.
 
     """
-    mode = _resolve_mode(model_diarization, device)
+    mode = _resolve_mode(model_diarization, speakrs_mode, device)
     logger.debug("hf_token ignored by the speakrs backend (public weights).")
     pipelines = _load_pipeline_pool(mode, workers)
     logger.info("speakrs diarization loaded: mode '%s', %d pooled handle(s).", mode, len(pipelines))

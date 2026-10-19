@@ -162,6 +162,28 @@ def test_pyannote_diarization_gets_default_model():
     assert settings.model_diarization == "pyannote/speaker-diarization-community-1"
 
 
+def test_speakrs_diarization_gets_default_model():
+    """speakrs serves the same community-1 id as pyannote, so both engines
+    are addressable under one model name for gateway routing."""
+    settings = ServerSettings(
+        backend_diarization="speakrs",
+        _env_file=None,
+    )
+
+    assert settings.model_diarization == "pyannote/speaker-diarization-community-1"
+    assert settings.diarization_speakrs_mode == "cuda-fast"
+    assert settings.diarization_workers == 4
+
+
+def test_speakrs_streaming_pipeline_is_rejected():
+    with pytest.raises(ValidationError, match="batch-only"):
+        ServerSettings(
+            backend_diarization="speakrs",
+            pipeline="streaming",
+            _env_file=None,
+        )
+
+
 def test_pyannote_streaming_pipeline_is_rejected():
     with pytest.raises(ValidationError, match="batch-only"):
         ServerSettings(

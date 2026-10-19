@@ -137,6 +137,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 postprocessing=settings.diarization_postprocessing,
                 postprocessing_max_speakers=settings.diarization_postprocessing_max_speakers,
                 workers=settings.diarization_workers,
+                speakrs_mode=settings.diarization_speakrs_mode,
             )
             runtime.diarization_adapter = diarization_adapter
 

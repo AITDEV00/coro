@@ -27,19 +27,23 @@ deployment must be selectable by model id.
 
 ## Decision
 
-Add `speakrs` as a fourth Diarization Backend Provider: a batch-only adapter under
-`coro/backends/diarization/speakrs.py`, dispatched by the existing Backend Adapter
-Factory, following the pyannote adapter's shape (runtime import inside the builder,
-shared segment normalization, `SpeakerSegment` at the boundary).
+Add `speakrs` as a fourth Diarization Backend Provider: a batch-only, GPU-only
+adapter under `coro/backends/diarization/speakrs.py`, dispatched by the existing
+Backend Adapter Factory, following the pyannote adapter's shape (runtime import
+inside the builder, shared segment normalization, `SpeakerSegment` at the boundary).
 
-- **Model id selects the Execution Mode.** The Diarization Model Selection reuses its
-  existing meaning — the value a deployment is addressed by — but names a speakrs tier:
-  `speakrs/cuda-fast` (throughput, 2 s hop), `speakrs/cuda` (accuracy, 1 s step),
-  `speakrs/cpu` (native Rust CPU). An explicit Diarization device selection that
-  contradicts the tier fails Strict Startup Validation rather than being silently
-  overridden. One LiteLLM deployment maps to one `CORO_MODEL_DIARIZATION`, so
-  `/v1/audio/transcriptions` model routing picks the tier without new request-surface
-  parameters.
+- **One model id across engines.** The Diarization Model Selection stays
+  `pyannote/speaker-diarization-community-1` — the same id the pyannote backend
+  serves — so a gateway routes or fails over between the Python engine and the
+  native engine under a single model name. Any other id fails Strict Startup
+  Validation. The pinned public `avencera/speakrs-models` weights (no HF token,
+  no ONNX Runtime) are an implementation detail the id deliberately does not name.
+- **The compute tier is a separate setting.** `CORO_DIARIZATION_SPEAKRS_MODE`
+  selects `cuda-fast` (2 s hop, throughput; default) or `cuda` (1 s step,
+  accuracy). Not a model-id suffix: the id must stay the pipeline identity for
+  gateway routing, while the tier is a deployment-level cost/quality choice.
+- **GPU-only.** There is no CPU tier: `CORO_DIARIZATION_DEVICE=cpu` is rejected
+  at startup. CPU inference remains the pyannote backend's job.
 - **A pooled Adapter Concurrency Policy.** A new `diarization_workers` setting
   (default 4) makes the builder load N pipeline handles — each its own CUDA stream,
   the binding-level equivalent of the Rust `clone_shared` — and `diarize_pcm`
@@ -59,9 +63,12 @@ shared segment normalization, `SpeakerSegment` at the boundary).
 
 - The application factory, pipelines, and request surfaces are unchanged: they already
   consume the `DiarizationAdapter` protocol and the factory's provider dispatch.
-- `diar-speakrs` becomes the third gated backend extra (wheel built from
-  avencera/speakrs; nothing on PyPI yet). Tests patch the `speakrs` import per the
-  backend-test convention, so the suite stays green without the wheel or a GPU.
+- `diar-speakrs` is deliberately NOT a uv extra: speakrs is not published to
+  PyPI, so the requirement would make `uv.lock` unsatisfiable. Build the abi3
+  wheel from avencera/speakrs (maturin; Linux x86_64 ships CUDA) and
+  `pip install` it; the backend's startup error names these steps. Tests patch
+  the `speakrs` import per the backend-test convention, so the suite stays
+  green without the wheel or a GPU.
 - Per-request `diarize_pcm` calls on the pool serialize per handle; throughput scales
   with `diarization_workers`, bounded by GPU saturation (~2500x on an RTX 4090-class
   card; expect a fraction of that on the H200 `1g.18gb` MIG slice and re-tune there).

@@ -2,8 +2,9 @@
 
 Tests verify that the SpeakrsDiarizationAdapter:
 - Converts 16-bit PCM bytes into float32 samples scaled to [-1, 1).
-- Resolves model ids and devices to speakrs Execution Modes, rejecting
-  contradictions (Strict Startup Validation, not silent override).
+- Resolves the community-1 model id, compute tier, and device to a speakrs
+  Execution Mode, rejecting other ids, unsupported tiers, and cpu devices
+  (Strict Startup Validation, not silent override).
 - Dispatches round-robin across the Worker Pool of pipeline handles.
 - Converts speakrs ``result.segments`` (start/end/speaker attributes) into
   1-indexed SpeakerSegment values clamped to the audio duration.
@@ -25,6 +26,7 @@ from unittest.mock import patch
 import pytest
 
 from coro.backends.diarization.speakrs import (
+    SPEAKRS_MODEL_ID,
     SpeakrsDiarizationAdapter,
     _load_pipeline_pool,
     _resolve_mode,
@@ -59,26 +61,34 @@ class _FakePipeline:
 
 
 # MARK: mode resolution
-def test_resolve_mode_accepts_prefix_and_underscores():
-    """Model ids accept an optional speakrs/ prefix and underscore spelling."""
-    assert _resolve_mode("speakrs/cuda-fast", "auto") == "cuda-fast"
-    assert _resolve_mode("cuda_fast", "auto") == "cuda-fast"
-    assert _resolve_mode("cuda", "auto") == "cuda"
-    assert _resolve_mode("cpu", "auto") == "cpu"
+def test_resolve_mode_accepts_both_cuda_tiers():
+    """The community-1 id resolves with either compute tier on a GPU device."""
+    assert (
+        _resolve_mode(SPEAKRS_MODEL_ID, "cuda-fast", "auto")
+        == _resolve_mode(SPEAKRS_MODEL_ID, "cuda-fast", "cuda")
+        == "cuda-fast"
+    )
+    assert _resolve_mode(SPEAKRS_MODEL_ID, "cuda", "auto") == "cuda"
 
 
-def test_resolve_mode_rejects_non_speakrs_model():
-    """A non-speakrs model id names valid modes in the error."""
-    with pytest.raises(ValueError, match="not a speakrs diarization mode"):
-        _resolve_mode("pyannote/speaker-diarization-community-1", "auto")
+def test_resolve_mode_rejects_other_model_ids():
+    """The backend serves exactly the community-1 pipeline id, like pyannote."""
+    with pytest.raises(ValueError, match="serves 'pyannote/speaker-diarization-community-1'"):
+        _resolve_mode("speakrs/cuda-fast", "cuda-fast", "auto")
+    with pytest.raises(ValueError, match="serves 'pyannote/speaker-diarization-community-1'"):
+        _resolve_mode("", "cuda-fast", "auto")
 
 
-def test_resolve_mode_rejects_contradictory_device():
-    """An explicit device must not contradict the model id."""
-    with pytest.raises(ValueError, match="contradicts"):
-        _resolve_mode("speakrs/cuda-fast", "cpu")
-    with pytest.raises(ValueError, match="contradicts"):
-        _resolve_mode("speakrs/cpu", "cuda")
+def test_resolve_mode_rejects_unsupported_tier():
+    """Only the two CUDA tiers are valid; cpu is gone."""
+    with pytest.raises(ValueError, match="Unsupported speakrs mode"):
+        _resolve_mode(SPEAKRS_MODEL_ID, "cpu", "auto")
+
+
+def test_resolve_mode_rejects_cpu_device():
+    """The backend is GPU-only; a cpu device fails Strict Startup Validation."""
+    with pytest.raises(ValueError, match="GPU-only"):
+        _resolve_mode(SPEAKRS_MODEL_ID, "cuda-fast", "cpu")
 
 
 # MARK: adapter conversion
@@ -144,7 +154,7 @@ def test_build_adapter_loads_pool_via_prepare():
     """One prepare call loads shared assets; workers pipelines are created."""
     fake = _fake_speakrs_module()
     with patch.dict(sys.modules, {"speakrs": fake}):
-        adapter = build_speakrs_diarization_adapter("speakrs/cuda-fast", device="auto", workers=4)
+        adapter = build_speakrs_diarization_adapter(SPEAKRS_MODEL_ID, device="auto", workers=4)
 
     assert isinstance(adapter, SpeakrsDiarizationAdapter)
     assert adapter.mode == "cuda-fast"

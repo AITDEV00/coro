@@ -70,29 +70,45 @@ def test_build_diarization_adapter_ignores_postprocessing_for_pyannote():
 
 
 def test_build_diarization_adapter_dispatches_to_speakrs_with_workers():
-    """The speakrs provider routes to the speakrs builder with the Worker Pool size."""
+    """The speakrs provider routes to the speakrs builder with pool and tier."""
     sentinel = object()
     with patch(
         "coro.backends.diarization.speakrs.build_speakrs_diarization_adapter",
         return_value=sentinel,
     ) as mock_build:
         adapter = factory.build_diarization_adapter(
-            "speakrs", "speakrs/cuda-fast", device="auto", workers=4
+            "speakrs",
+            "pyannote/speaker-diarization-community-1",
+            device="auto",
+            workers=4,
+            speakrs_mode="cuda",
         )
 
     assert adapter is sentinel
-    mock_build.assert_called_once_with("speakrs/cuda-fast", device="auto", workers=4, hf_token=None)
+    mock_build.assert_called_once_with(
+        "pyannote/speaker-diarization-community-1",
+        device="auto",
+        workers=4,
+        hf_token=None,
+        speakrs_mode="cuda",
+    )
 
 
-def test_build_diarization_adapter_forwards_default_workers_to_speakrs():
-    """An omitted workers kwarg reaches speakrs with the documented default."""
+def test_build_diarization_adapter_forwards_speakrs_defaults():
+    """Omitted kwargs reach speakrs with the documented defaults."""
     with patch(
         "coro.backends.diarization.speakrs.build_speakrs_diarization_adapter",
         return_value=object(),
     ) as mock_build:
-        factory.build_diarization_adapter("speakrs", "speakrs/cuda")
+        factory.build_diarization_adapter("speakrs", "pyannote/speaker-diarization-community-1")
 
-    mock_build.assert_called_once_with("speakrs/cuda", device="auto", workers=4, hf_token=None)
+    mock_build.assert_called_once_with(
+        "pyannote/speaker-diarization-community-1",
+        device="auto",
+        workers=4,
+        hf_token=None,
+        speakrs_mode="cuda-fast",
+    )
 
 
 def test_build_diarization_adapter_unknown_provider_raises():
