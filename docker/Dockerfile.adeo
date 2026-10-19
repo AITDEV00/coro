@@ -7,15 +7,22 @@
 # exactly once and the layer order keeps rebuilds cheap.
 #
 # ── LAYER ORDER (read before editing) ────────────────────────────────────────
+# An instruction edit re-runs that step and EVERYTHING BELOW it, so layers
+# are ordered rarest-change-first:
+#   apt/deps/venv (lockfile edits only) -> speakrs weights (pinned-revision
+#   bumps only) -> coro source (every commit) -> entrypoint/config.
+#
 #   1. NEVER `RUN chown -R` over a COPYed tree — it duplicates the whole tree
 #      into a new layer (the omnivoice 4.9 GB lesson). Use `COPY --chown`.
-#   2. Volatile layers at the BOTTOM: apt/deps/venv first, weights and source
-#      last, so an edit re-pushes only kilobytes.
+#   2. The weights sit ABOVE the source COPY, NOT at the bottom: below it a
+#      code edit would re-copy 31 MB of weights on every commit, while above
+#      the deps sync a weights bump would re-sync the 8 GB venv — the slot
+#      right after the deps sync is the only position where neither happens.
 #
-# Re-push cost per change:
-#   speakrs weights (docker/models/speakrs/) -> ~31 MB
-#   coro source edit                        -> ~1 MB
-#   entrypoint edit                         -> ~9 KB
+# Rebuild work per change:
+#   coro source edit -> source COPY + project sync + wheel + Scalar (~30 s)
+#   weights bump     -> two weights COPYs + the small source section
+#   lockfile change  -> full rebuild including the 8 GB venv sync
 #
 # Reproduces the cluster-proven layout (omnivoice Dockerfile.internal):
 #   * Ubuntu 24.04 + CUDA 12.8 runtime + cuDNN 9
@@ -124,18 +131,48 @@ COPY --chown=runner:runner pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-install-project --no-dev --no-editable \
         --no-install-package triton --extra ${EXTRA}
 
-COPY --chown=runner:runner coro ./coro
-
-RUN uv sync --frozen --no-dev --no-editable \
-        --no-install-package triton --extra ${EXTRA}
+# ---------------------------------------------------------------------------
+# Baked speakrs weights (docker/models/speakrs/, gitignored — populate from
+# the HF cache after a local run; see make fetch-models).
+#
+# Positioned ABOVE the coro source COPY, right after the deps sync: weights
+# change only when the pinned revision moves, source changes with every
+# commit, and an edit re-runs everything below it — so weights below source
+# would re-copy 31 MB per code edit, while weights above the deps sync would
+# re-sync the 8 GB venv per weights bump. This is the only slot avoiding both.
+#
+# The 9 files the speakrs CUDA modes load, in the pinned-revision snapshot
+# layout: the HF cache stores blobs + a snapshot dir of symlinks, so export
+# with `cp -L` (dereference) before building. Split into two layers — the
+# ~31 MB model blobs and the tiny PLDA/text aux files — so swapping one
+# never re-copies the other.
+# ---------------------------------------------------------------------------
+ARG SPEAKRS_MODEL_DIR=docker/models/speakrs
+# Model blobs (~31 MB, stable): segmentation + speaker embedding weights.
+COPY --chown=runner:runner ${SPEAKRS_MODEL_DIR}/segmentation-3.0.safetensors \
+     ${SPEAKRS_MODEL_DIR}/wespeaker-multimask-tail.safetensors \
+     /home/runner/models/speakrs/
+# Aux files (PLDA matrices + min-samples text): kilobytes, separate layer.
+COPY --chown=runner:runner ${SPEAKRS_MODEL_DIR}/wespeaker-voxceleb-resnet34.min_num_samples.txt \
+     ${SPEAKRS_MODEL_DIR}/plda_lda.npy \
+     ${SPEAKRS_MODEL_DIR}/plda_tr.npy \
+     ${SPEAKRS_MODEL_DIR}/plda_mu.npy \
+     ${SPEAKRS_MODEL_DIR}/plda_psi.npy \
+     ${SPEAKRS_MODEL_DIR}/plda_mean1.npy \
+     ${SPEAKRS_MODEL_DIR}/plda_mean2.npy \
+     /home/runner/models/speakrs/
 
 # Optional speakrs wheel (docker/wheels/, gitignored; maturin build from
-# avencera/speakrs). --no-deps: the CUDA libraries its extras would pull
-# already resolve from the venv (torch cu13 cuDNN via LD_LIBRARY_PATH,
-# nvidia-cublas-cu12 from the cuda extra). A missing wheel keeps the build
-# working; the backend names the install steps at startup if selected.
-# The default matches the maturin output (manylinux_2_35 abi3); the Makefile
-# passes the staged wheel explicitly via --build-arg.
+# avencera/speakrs), also above the source COPY: like the weights it is a
+# rare-change binary blob (only a speakrs version bump touches it), so a
+# code edit must not re-copy it. The project sync below uses --inexact so it
+# installs coro WITHOUT pruning speakrs — which is not in the lockfile
+# (it is not on PyPI; see docs/adr/0025). --no-deps: the CUDA libraries its
+# extras would pull already resolve from the venv (torch cu13 cuDNN via
+# LD_LIBRARY_PATH, nvidia-cublas-cu12 from the cuda extra). A missing wheel
+# keeps the build working; the backend names the install steps at startup
+# if selected. The default matches the maturin output (manylinux_2_35 abi3);
+# the Makefile passes the staged wheel explicitly via --build-arg.
 # Copy into a directory, NOT a renamed file: uv validates wheel filenames
 # (needs the python/abi/platform tags), so the original maturin name must
 # survive the COPY. Same pattern as the public docker/Dockerfile.
@@ -144,8 +181,14 @@ COPY --chown=runner:runner ${SPEAKRS_WHEEL} /tmp/speakrs-wheel/
 RUN uv pip install --python ${VIRTUAL_ENV}/bin/python --no-deps /tmp/speakrs-wheel/*.whl \
     && rm -rf /tmp/speakrs-wheel
 
+COPY --chown=runner:runner coro ./coro
+
+RUN uv sync --frozen --no-dev --no-editable --inexact \
+        --no-install-package triton --extra ${EXTRA}
+
 # Self-host the Scalar docs bundle (same as the public image), then drop the
-# uv cache so the shipped layers carry only the venv.
+# uv cache so the shipped layers carry only the venv. Runs after the source
+# COPY because it imports coro.api.docs for the pinned URL.
 RUN ${VIRTUAL_ENV}/bin/python -c "\
 import urllib.request; \
 from coro.api.docs import SCALAR_CDN_URL, bundle_path; \
@@ -156,29 +199,8 @@ print('scalar bundle', target, target.stat().st_size, 'bytes')" \
     && rm -rf /home/runner/.cache
 
 # ══════════════════════════════════════════════════════════════════════════
-# VOLATILE LAYERS BELOW — weights, entrypoint, config.
+# VOLATILE LAYERS BELOW — entrypoint, config.
 # ══════════════════════════════════════════════════════════════════════════
-
-# ---------------------------------------------------------------------------
-# Baked speakrs weights (docker/models/speakrs/, gitignored — populate from
-# the HF cache after a local run; see make fetch-models).
-#
-# The 9 files the speakrs CUDA modes load, in the pinned-revision snapshot
-# layout: the HF cache stores blobs + a snapshot dir of symlinks, so export
-# with `cp -L` (dereference) before building. ~31 MB total, copied per-file
-# so a config change does not invalidate the 26 MB embedding weights layer.
-# ---------------------------------------------------------------------------
-ARG SPEAKRS_MODEL_DIR=docker/models/speakrs
-COPY --chown=runner:runner ${SPEAKRS_MODEL_DIR}/segmentation-3.0.safetensors \
-     ${SPEAKRS_MODEL_DIR}/wespeaker-multimask-tail.safetensors \
-     ${SPEAKRS_MODEL_DIR}/wespeaker-voxceleb-resnet34.min_num_samples.txt \
-     ${SPEAKRS_MODEL_DIR}/plda_lda.npy \
-     ${SPEAKRS_MODEL_DIR}/plda_tr.npy \
-     ${SPEAKRS_MODEL_DIR}/plda_mu.npy \
-     ${SPEAKRS_MODEL_DIR}/plda_psi.npy \
-     ${SPEAKRS_MODEL_DIR}/plda_mean1.npy \
-     ${SPEAKRS_MODEL_DIR}/plda_mean2.npy \
-     /home/runner/models/speakrs/
 
 # ---------------------------------------------------------------------------
 # Entrypoint: /tmp redirection (read-only-root friendly), baked-weights
